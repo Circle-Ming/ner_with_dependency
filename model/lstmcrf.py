@@ -24,6 +24,9 @@ class NNCRF(nn.Module):
         self.context_emb = config.context_emb
         self.interaction_func = config.interaction_func
 
+        self.deplabel2idx = config.deplabel2idx
+        self.deplabels = config.deplabels
+        self.dep_model = config.dep_model
 
         self.label2idx = config.label2idx
         self.labels = config.idx2labels
@@ -112,7 +115,13 @@ class NNCRF(nn.Module):
         init_transition[:, self.pad_idx] = -10000.0
         init_transition[self.pad_idx, :] = -10000.0
 
+        init_dg_transition = torch.randn(len(self.deplabels), self.label_size).to(self.device)
+        init_dg_transition[:, self.start_idx] = -10000.0
+        init_dg_transition[:, self.end_idx] = -10000.0
+        init_dg_transition[:, self.pad_idx] = -10000.0
+
         self.transition = nn.Parameter(init_transition)
+        self.dgtransition = nn.Parameter(init_dg_transition)
 
 
     def neural_scoring(self, word_seq_tensor, word_seq_lens, batch_context_emb, char_inputs, char_seq_lens, adj_matrixs, adjs_in, adjs_out, graphs, dep_label_adj, dep_head_tensor, dep_label_tensor, trees=None):
@@ -245,11 +254,15 @@ class NNCRF(nn.Module):
 
     def neg_log_obj(self, words, word_seq_lens, batch_context_emb, chars, char_seq_lens, adj_matrixs, adjs_in, adjs_out, graphs, dep_label_adj, batch_dep_heads, tags, batch_dep_label, trees=None):
         features = self.neural_scoring(words, word_seq_lens, batch_context_emb, chars, char_seq_lens, adj_matrixs, adjs_in, adjs_out, graphs, dep_label_adj, batch_dep_heads, batch_dep_label, trees)
-
-        all_scores = self.calculate_all_scores(features)
-
+        
         batch_size = words.size(0)
         sent_len = words.size(1)
+
+        if self.dep_model == "dglstm":
+            dep_label_score = self.dgtransition.view(1, 1, len(self.deplabels), self.label_size).expand(batch_size, sent_len, len(self.deplabels), self.label_size)
+            dep_score = torch.gather(dep_label_score, 2, batch_dep_label.view(batch_size, sent_len, 1, 1).expand(batch_size, sent_len, 1, self.label_size)).view(batch_size, sent_len, self.label_size)
+            features = features + dep_score
+        all_scores = self.calculate_all_scores(features)
 
         maskTemp = torch.arange(1, sent_len + 1, dtype=torch.long).view(1, sent_len).expand(batch_size, sent_len).to(self.device)
         mask = torch.le(maskTemp, word_seq_lens.view(batch_size, 1).expand(batch_size, sent_len)).to(self.device)
